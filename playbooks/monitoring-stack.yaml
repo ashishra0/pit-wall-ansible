@@ -1,0 +1,238 @@
+---
+- name: Deploy Prometheus and Grafana monitoring stack
+  hosts: monitoring
+  become: yes
+  vars:
+    monitoring_dir: /opt/monitoring
+    prometheus_retention: 30d
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install required packages for Docker
+      apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+        state: present
+
+    - name: Create directory for Docker GPG key
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Add Docker GPG key
+      shell: |
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+        gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+      args:
+        creates: /etc/apt/keyrings/docker.gpg
+
+    - name: Get Ubuntu codename
+      command: lsb_release -cs
+      register: ubuntu_codename
+      changed_when: false
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu {{ ubuntu_codename.stdout }} stable"
+        state: present
+        filename: docker
+
+    - name: Install Docker packages
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: present
+        update_cache: yes
+
+    - name: Start and enable Docker service
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Create monitoring directory
+      file:
+        path: "{{ monitoring_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Create Prometheus data directory
+      file:
+        path: "{{ monitoring_dir }}/prometheus-data"
+        state: directory
+        mode: "0777"
+
+    - name: Create Grafana data directory
+      file:
+        path: "{{ monitoring_dir }}/grafana-data"
+        state: directory
+        mode: "0777"
+
+    - name: Configure Docker log rotation
+      copy:
+        dest: /etc/docker/daemon.json
+        content: |
+          {
+            "log-driver": "json-file",
+            "log-opts": {
+              "max-size": "10m",
+              "max-file": "3"
+            }
+          }
+      notify: restart docker
+
+    - name: Create Prometheus configuration file
+      copy:
+        dest: "{{ monitoring_dir }}/prometheus.yml"
+        content: |
+          global:
+            scrape_interval: 15s
+            evaluation_interval: 15s
+
+          scrape_configs:
+            - job_name: 'prometheus'
+              static_configs:
+                - targets: ['localhost:9090']
+                  labels:
+                    instance: 'prometheus'
+
+            - job_name: 'raspberry-pi'
+              static_configs:
+                - targets: ['192.168.68.58:9100']
+                  labels:
+                    instance: 'raspberry-pi'
+                    role: 'network-core'
+
+            - job_name: 'proxmox-host'
+              static_configs:
+                - targets: ['192.168.68.11:9100']
+                  labels:
+                    instance: 'proxmox-host'
+                    role: 'hypervisor'
+
+            - job_name: 'monitor-lxc'
+              static_configs:
+                - targets: ['192.168.68.20:9100']
+                  labels:
+                    instance: 'monitor-lxc'
+                    role: 'monitoring'
+        mode: "0644"
+
+    - name: Create Docker Compose file
+      copy:
+        dest: "{{ monitoring_dir }}/docker-compose.yml"
+        content: |
+          version: '3.8'
+
+          services:
+            prometheus:
+              image: prom/prometheus:latest
+              container_name: prometheus
+              restart: always
+              ports:
+                - "9090:9090"
+              volumes:
+                - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+                - ./prometheus-data:/prometheus
+              command:
+                - '--config.file=/etc/prometheus/prometheus.yml'
+                - '--storage.tsdb.path=/prometheus'
+                - '--storage.tsdb.retention.time={{ prometheus_retention }}'
+                - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+                - '--web.console.templates=/usr/share/prometheus/consoles'
+              healthcheck:
+                test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+                interval: 30s
+                timeout: 10s
+                retries: 3
+                start_period: 40s
+              logging:
+                driver: "json-file"
+                options:
+                  max-size: "10m"
+                  max-file: "3"
+
+            grafana:
+              image: grafana/grafana:latest
+              container_name: grafana
+              restart: always
+              ports:
+                - "3000:3000"
+              volumes:
+                - ./grafana-data:/var/lib/grafana
+              environment:
+                - GF_SECURITY_ADMIN_PASSWORD=admin
+                - GF_USERS_ALLOW_SIGN_UP=false
+                - GF_SERVER_ROOT_URL=http://grafana.pit-wall.local:3000
+              healthcheck:
+                test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+                interval: 30s
+                timeout: 10s
+                retries: 3
+                start_period: 40s
+              logging:
+                driver: "json-file"
+                options:
+                  max-size: "10m"
+                  max-file: "3"
+              depends_on:
+                - prometheus
+        mode: "0644"
+
+    - name: Start Prometheus and Grafana
+      community.docker.docker_compose_v2:
+        project_src: "{{ monitoring_dir }}"
+        state: present
+      register: compose_output
+
+    - name: Wait for Prometheus to be healthy
+      uri:
+        url: http://localhost:9090/-/healthy
+        status_code: 200
+      retries: 30
+      delay: 2
+      register: prometheus_health
+      until: prometheus_health.status == 200
+
+    - name: Wait for Grafana to be healthy
+      uri:
+        url: http://localhost:3000/api/health
+        status_code: 200
+      retries: 30
+      delay: 2
+      register: grafana_health
+      until: grafana_health.status == 200
+
+    - name: Display access information
+      debug:
+        msg:
+          - "Monitoring stack deployed successfully!"
+          - ""
+          - "Access URLs:"
+          - "  Prometheus: http://prometheus.pit-wall.local:9090"
+          - "  Grafana:    http://grafana.pit-wall.local:3000"
+          - ""
+          - "Grafana credentials:"
+          - "  Username: admin"
+          - "  Password: admin"
+          - ""
+          - "Next steps:"
+          - "  1. Access Grafana and change the admin password"
+          - "  2. Add Prometheus as a data source"
+          - "  3. Import dashboards"
+
+  handlers:
+    - name: restart docker
+      systemd:
+        name: docker
+        state: restarted
