@@ -1,0 +1,35 @@
+---
+all:
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+
+  children:
+    raspberry_pi:
+      hosts:
+        pi:
+          ansible_host: 192.168.68.58
+          ansible_user: ashish
+
+    proxmox:
+      hosts:
+        proxmox-host:
+          ansible_host: 192.168.68.11
+          ansible_user: root
+
+    # monitoring:
+    #   hosts:
+    #     monitor:
+    #       ansible_host: 192.168.68.11
+    #       ansible_user: root
+
+    # power_monitor:
+    #   hosts:
+    #     power:
+    #       ansible_host: 192.168.68.12
+    #       ansible_user: root
+
+    # nas:
+    #   hosts:
+    #     nas:
+    #       ansible_host: 192.168.68.12
+    #       ansible_user: nasadmin
