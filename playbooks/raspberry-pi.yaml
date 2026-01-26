@@ -1,0 +1,146 @@
+---
+- name: Configure Raspberry Pi with Pi-hole and monitoring
+  hosts: raspberry_pi
+  become: yes
+  vars:
+    pihole_dns_records:
+      - "192.168.68.11 proxmox.pit-wall.local"
+      - "192.168.68.11 grafana.pit-wall.local"
+      - "192.168.68.11 prometheus.pit-wall.local"
+      - "192.168.68.58 pihole.pit-wall.local"
+      - "192.168.68.12 nas.pit-wall.local"
+      - "192.168.68.12 minio.pit-wall.local"
+    node_exporter_version: "1.7.0"
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install required packages
+      apt:
+        name:
+          - curl
+          - git
+          - wget
+        state: present
+
+    - name: Check if Pi-hole is already installed
+      stat:
+        path: /usr/local/bin/pihole
+      register: pihole_installed
+
+    - name: Download Pi-hole installer
+      get_url:
+        url: https://install.pi-hole.net
+        dest: /tmp/pihole-install.sh
+        mode: '0755'
+      when: not pihole_installed.stat.exists
+
+    - name: Install Pi-hole (unattended)
+      shell: |
+        curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended
+      args:
+        creates: /usr/local/bin/pihole
+      when: not pihole_installed.stat.exists
+
+    - name: Wait for Pi-hole to be ready
+      wait_for:
+        path: /etc/pihole/setupVars.conf
+        timeout: 60
+      when: not pihole_installed.stat.exists
+
+    # Pi-hole v6 stores custom DNS records in /etc/pihole/pihole.toml
+    # Format: hosts = ["IP hostname", "IP hostname", ...]
+    - name: Add local DNS records to Pi-hole (v6 method)
+      lineinfile:
+        path: /etc/pihole/pihole.toml
+        insertafter: '^\s+hosts = \['
+        line: '    "{{ item }}",'
+        state: present
+      loop:
+        - "192.168.68.58 pihole.pit-wall.local"
+        - "192.168.68.11 proxmox.pit-wall.local"
+        - "192.168.68.11 grafana.pit-wall.local"
+        - "192.168.68.11 prometheus.pit-wall.local"
+        - "192.168.68.12 nas.pit-wall.local"
+        - "192.168.68.12 minio.pit-wall.local"
+      notify: restart pihole-FTL
+
+    - name: Check if node_exporter is installed
+      stat:
+        path: /usr/local/bin/node_exporter
+      register: node_exporter_installed
+
+    - name: Download node_exporter
+      get_url:
+        url: "https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/node_exporter-{{ node_exporter_version }}.linux-armv7.tar.gz"
+        dest: "/tmp/node_exporter-{{ node_exporter_version }}.linux-armv7.tar.gz"
+      when: not node_exporter_installed.stat.exists
+
+    - name: Extract node_exporter
+      unarchive:
+        src: "/tmp/node_exporter-{{ node_exporter_version }}.linux-armv7.tar.gz"
+        dest: /tmp
+        remote_src: yes
+      when: not node_exporter_installed.stat.exists
+
+    - name: Copy node_exporter binary
+      copy:
+        src: "/tmp/node_exporter-{{ node_exporter_version }}.linux-armv7/node_exporter"
+        dest: /usr/local/bin/node_exporter
+        mode: '0755'
+        remote_src: yes
+      when: not node_exporter_installed.stat.exists
+
+    - name: Create node_exporter user
+      user:
+        name: node_exporter
+        system: yes
+        shell: /bin/false
+        create_home: no
+
+    - name: Create node_exporter systemd service
+      copy:
+        dest: /etc/systemd/system/node_exporter.service
+        content: |
+          [Unit]
+          Description=Node Exporter
+          After=network.target
+
+          [Service]
+          Type=simple
+          User=node_exporter
+          ExecStart=/usr/local/bin/node_exporter
+          Restart=always
+          RestartSec=10
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Enable and start node_exporter
+      systemd:
+        name: node_exporter
+        state: started
+        enabled: yes
+        daemon_reload: yes
+
+    - name: Display Pi-hole status
+      command: pihole status
+      register: pihole_status
+      changed_when: false
+
+    - name: Show Pi-hole admin password message
+      debug:
+        msg:
+          - "Pi-hole is installed!"
+          - "Set admin password with: sudo pihole -a -p"
+          - "Access Pi-hole at: http://pihole.pit-wall.local/admin"
+          - "Node exporter running on: http://{{ ansible_host }}:9100/metrics"
+
+  handlers:
+    - name: restart pihole-FTL
+      systemd:
+        name: pihole-FTL
+        state: restarted
