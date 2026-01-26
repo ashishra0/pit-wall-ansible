@@ -36,6 +36,6 @@ ansible-playbook playbooks/power-monitoring.yaml
 
 - [x] Ansible control plane setup
 - [x] Pi-hole + DNS configuration
-- [ ] Monitoring stack deployment
+- [x] Monitoring stack deployment
 - [ ] Power monitoring
 - [ ] Dashboards
