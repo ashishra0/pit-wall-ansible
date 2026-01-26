@@ -11,9 +11,6 @@
       - "https://github.com"
 
   tasks:
-    # ==========================================
-    # SPEEDTEST MONITORING (using speedtest-cli)
-    # ==========================================
     - name: Install required packages
       apt:
         name:
@@ -25,7 +22,7 @@
       file:
         path: /var/lib/node_exporter/textfile_collector
         state: directory
-        mode: '0755'
+        mode: "0755"
 
     - name: Create speedtest script
       copy:
@@ -74,7 +71,7 @@
           EOF
             mv "$TEMP_FILE" "$OUTPUT_FILE"
           fi
-        mode: '0755'
+        mode: "0755"
 
     - name: Update node_exporter service to use textfile collector
       copy:
@@ -112,9 +109,6 @@
       async: 120
       poll: 0
 
-    # ==========================================
-    # BLACKBOX EXPORTER
-    # ==========================================
     - name: Check if blackbox-exporter is installed
       stat:
         path: /usr/local/bin/blackbox_exporter
@@ -137,7 +131,7 @@
       copy:
         src: "/tmp/blackbox_exporter-{{ blackbox_exporter_version }}.linux-armv7/blackbox_exporter"
         dest: /usr/local/bin/blackbox_exporter
-        mode: '0755'
+        mode: "0755"
         remote_src: yes
       when: not blackbox_installed.stat.exists
 
@@ -145,7 +139,7 @@
       file:
         path: /etc/blackbox_exporter
         state: directory
-        mode: '0755'
+        mode: "0755"
 
     - name: Create blackbox-exporter configuration
       copy:
@@ -161,7 +155,7 @@
                 method: GET
                 preferred_ip_protocol: "ip4"
                 follow_redirects: true
-        mode: '0644'
+        mode: "0644"
 
     - name: Create blackbox-exporter systemd service
       copy:
@@ -198,9 +192,6 @@
           - ""
           - "Next: Update Prometheus config to scrape blackbox exporter"
 
-# ==========================================
-# UPDATE PROMETHEUS CONFIGURATION
-# ==========================================
 - name: Update Prometheus configuration for internet monitoring
   hosts: monitoring
   become: yes
