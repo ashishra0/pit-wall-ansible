@@ -1,0 +1,167 @@
+---
+- name: Install Tapo power monitoring on Monitor LXC
+  hosts: monitoring
+  become: yes
+  vars_files:
+    - ../vars/tapo_credentials.yml
+  vars:
+    monitoring_dir: /opt/monitoring
+
+  tasks:
+    - name: Install Ruby and dependencies
+      apt:
+        name:
+          - ruby
+          - ruby-dev
+          - build-essential
+        state: present
+        update_cache: yes
+
+    - name: Install digest-crc gem
+      gem:
+        name: digest-crc
+        state: present
+        user_install: no
+
+    - name: Install tapo gem
+      gem:
+        name: tapo
+        state: present
+        user_install: no
+
+    - name: Create tapo exporter directory
+      file:
+        path: /opt/tapo_exporter
+        state: directory
+        mode: '0755'
+
+    - name: Copy tapo exporter script
+      copy:
+        src: ../files/tapo_exporter.rb
+        dest: /opt/tapo_exporter/tapo_exporter.rb
+        mode: '0755'
+
+    - name: Create tapo exporter systemd service
+      copy:
+        dest: /etc/systemd/system/tapo-exporter.service
+        content: |
+          [Unit]
+          Description=Tapo P110 Prometheus Exporter
+          After=network.target
+
+          [Service]
+          Type=simple
+          User=root
+          WorkingDirectory=/opt/tapo_exporter
+          Environment="TAPO_EMAIL={{ tapo_email }}"
+          Environment="TAPO_PASSWORD={{ tapo_password }}"
+          ExecStart=/usr/bin/ruby /opt/tapo_exporter/tapo_exporter.rb
+          Restart=always
+          RestartSec=10
+
+          [Install]
+          WantedBy=multi-user.target
+        mode: '0644'
+
+    - name: Enable and start tapo-exporter
+      systemd:
+        name: tapo-exporter
+        state: started
+        enabled: yes
+        daemon_reload: yes
+
+    - name: Wait for tapo-exporter to be ready
+      uri:
+        url: http://localhost:9200/health
+        status_code: 200
+      retries: 10
+      delay: 2
+      register: exporter_health
+      until: exporter_health.status == 200
+
+    - name: Update Prometheus configuration with tapo metrics
+      copy:
+        dest: "{{ monitoring_dir }}/prometheus.yml"
+        content: |
+          global:
+            scrape_interval: 15s
+            evaluation_interval: 15s
+
+          scrape_configs:
+            - job_name: 'prometheus'
+              static_configs:
+                - targets: ['localhost:9090']
+                  labels:
+                    instance: 'prometheus'
+
+            - job_name: 'raspberry-pi'
+              static_configs:
+                - targets: ['192.168.68.58:9100']
+                  labels:
+                    instance: 'raspberry-pi'
+                    role: 'network-core'
+
+            - job_name: 'proxmox-host'
+              static_configs:
+                - targets: ['192.168.68.11:9100']
+                  labels:
+                    instance: 'proxmox-host'
+                    role: 'hypervisor'
+
+            - job_name: 'monitor-lxc'
+              static_configs:
+                - targets: ['192.168.68.20:9100']
+                  labels:
+                    instance: 'monitor-lxc'
+                    role: 'monitoring'
+
+            # Website uptime/latency monitoring
+            - job_name: 'blackbox-http'
+              metrics_path: /probe
+              params:
+                module: [http_2xx]
+              static_configs:
+                - targets:
+                    - https://ashishra0.com
+                    - https://x.com
+                    - https://github.com
+              relabel_configs:
+                - source_labels: [__address__]
+                  target_label: __param_target
+                - source_labels: [__param_target]
+                  target_label: instance
+                - target_label: __address__
+                  replacement: 192.168.68.58:9115
+
+            # Blackbox exporter itself
+            - job_name: 'blackbox-exporter'
+              static_configs:
+                - targets: ['192.168.68.58:9115']
+
+            # Tapo power monitoring
+            - job_name: 'tapo-power'
+              static_configs:
+                - targets: ['192.168.68.20:9200']
+                  labels:
+                    instance: 'homelab-ups'
+                    device: 'tapo-p110'
+        mode: "0644"
+      notify: restart prometheus
+
+    - name: Display status
+      debug:
+        msg:
+          - "Tapo power monitoring installed!"
+          - ""
+          - "Exporter running at: http://192.168.68.20:9200/metrics"
+          - "Check metrics: curl http://192.168.68.20:9200/metrics"
+          - ""
+          - "Next: Create power consumption dashboard in Grafana"
+
+  handlers:
+    - name: restart prometheus
+      community.docker.docker_compose_v2:
+        project_src: "{{ monitoring_dir }}"
+        services:
+          - prometheus
+        state: restarted
