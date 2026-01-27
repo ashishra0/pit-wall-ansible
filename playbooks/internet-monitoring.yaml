@@ -14,9 +14,37 @@
     - name: Install required packages
       apt:
         name:
-          - speedtest-cli
-          - bc
+          - curl
+          - gnupg
+          - jq
         state: present
+
+    - name: Remove old speedtest-cli package
+      apt:
+        name: speedtest-cli
+        state: absent
+
+    - name: Download Ookla GPG key
+      get_url:
+        url: https://packagecloud.io/ookla/speedtest-cli/gpgkey
+        dest: /tmp/ookla-speedtest.key
+
+    - name: Add Ookla GPG key to keyring
+      shell: gpg --dearmor < /tmp/ookla-speedtest.key > /usr/share/keyrings/ookla-speedtest.gpg
+      args:
+        creates: /usr/share/keyrings/ookla-speedtest.gpg
+
+    - name: Add Ookla speedtest repository
+      apt_repository:
+        repo: "deb [signed-by=/usr/share/keyrings/ookla-speedtest.gpg] https://packagecloud.io/ookla/speedtest-cli/debian/ {{ ansible_distribution_release }} main"
+        state: present
+        filename: ookla_speedtest-cli
+
+    - name: Install Ookla speedtest
+      apt:
+        name: speedtest
+        state: present
+        update_cache: yes
 
     - name: Create textfile collector directory for node_exporter
       file:
@@ -29,27 +57,40 @@
         dest: /usr/local/bin/speedtest-metrics.sh
         content: |
           #!/bin/bash
-          # Run speedtest and export metrics for Prometheus
+          # Run Ookla speedtest and export metrics for Prometheus
           OUTPUT_FILE="/var/lib/node_exporter/textfile_collector/speedtest.prom"
           TEMP_FILE="${OUTPUT_FILE}.tmp"
 
-          # Run speedtest and parse results
-          RESULT=$(speedtest-cli --simple 2>/dev/null)
-
-          if [ $? -eq 0 ]; then
-            PING=$(echo "$RESULT" | grep 'Ping:' | awk '{print $2}')
-            DOWNLOAD=$(echo "$RESULT" | grep 'Download:' | awk '{print $2}')
-            UPLOAD=$(echo "$RESULT" | grep 'Upload:' | awk '{print $2}')
-
-            # Convert Mbit/s to bits/s for Prometheus
-            DOWNLOAD_BITS=$(echo "$DOWNLOAD * 1000000" | bc)
-            UPLOAD_BITS=$(echo "$UPLOAD * 1000000" | bc)
-
-            # Write metrics
+          # Run speedtest with JSON output (timeout after 90 seconds)
+          if ! RESULT=$(timeout 90 speedtest --accept-license --accept-gdpr --format=json 2>/dev/null); then
+            # Mark as failed
             cat > "$TEMP_FILE" <<EOF
+          # HELP speedtest_up Speedtest successful (1) or failed (0)
+          # TYPE speedtest_up gauge
+          speedtest_up 0
+          EOF
+            mv "$TEMP_FILE" "$OUTPUT_FILE"
+            exit 0
+          fi
+
+          # Parse JSON results
+          PING=$(echo "$RESULT" | jq -r '.ping.latency')
+          JITTER=$(echo "$RESULT" | jq -r '.ping.jitter')
+          DOWNLOAD_BPS=$(echo "$RESULT" | jq -r '.download.bandwidth')
+          UPLOAD_BPS=$(echo "$RESULT" | jq -r '.upload.bandwidth')
+
+          # Convert bytes per second to bits per second (multiply by 8)
+          DOWNLOAD_BITS=$(echo "$DOWNLOAD_BPS * 8" | bc)
+          UPLOAD_BITS=$(echo "$UPLOAD_BPS * 8" | bc)
+
+          # Write metrics
+          cat > "$TEMP_FILE" <<EOF
           # HELP speedtest_ping_ms Speedtest ping latency in milliseconds
           # TYPE speedtest_ping_ms gauge
           speedtest_ping_ms $PING
+          # HELP speedtest_jitter_ms Speedtest jitter in milliseconds
+          # TYPE speedtest_jitter_ms gauge
+          speedtest_jitter_ms $JITTER
           # HELP speedtest_download_bits_per_second Download speed in bits per second
           # TYPE speedtest_download_bits_per_second gauge
           speedtest_download_bits_per_second $DOWNLOAD_BITS
@@ -61,16 +102,7 @@
           speedtest_up 1
           EOF
 
-            mv "$TEMP_FILE" "$OUTPUT_FILE"
-          else
-            # Mark as failed
-            cat > "$TEMP_FILE" <<EOF
-          # HELP speedtest_up Speedtest successful (1) or failed (0)
-          # TYPE speedtest_up gauge
-          speedtest_up 0
-          EOF
-            mv "$TEMP_FILE" "$OUTPUT_FILE"
-          fi
+          mv "$TEMP_FILE" "$OUTPUT_FILE"
         mode: "0755"
 
     - name: Update node_exporter service to use textfile collector
@@ -97,10 +129,10 @@
         state: restarted
         daemon_reload: yes
 
-    - name: Create speedtest cron job (run every 30 minutes)
+    - name: Create speedtest cron job (run every 5 minutes)
       cron:
         name: "Run speedtest metrics"
-        minute: "*/30"
+        minute: "*/5"
         job: "/usr/local/bin/speedtest-metrics.sh"
         user: root
 
@@ -257,6 +289,14 @@
             - job_name: 'blackbox-exporter'
               static_configs:
                 - targets: ['192.168.68.58:9115']
+
+            # Tapo power monitoring
+            - job_name: 'tapo-power'
+              static_configs:
+                - targets: ['192.168.68.20:9200']
+                  labels:
+                    instance: 'homelab-ups'
+                    device: 'tapo-p110'
         mode: "0644"
       notify: restart prometheus
 
