@@ -91,7 +91,13 @@
           }
       notify: restart docker
 
-    - name: Create Prometheus configuration file
+    - name: Create Prometheus targets directory
+      file:
+        path: "{{ monitoring_dir }}/targets"
+        state: directory
+        mode: "0755"
+
+    - name: Create Prometheus configuration file (file-based service discovery)
       copy:
         dest: "{{ monitoring_dir }}/prometheus.yml"
         content: |
@@ -100,32 +106,66 @@
             evaluation_interval: 15s
 
           scrape_configs:
-            - job_name: 'prometheus'
-              static_configs:
-                - targets: ['localhost:9090']
-                  labels:
-                    instance: 'prometheus'
+            # File-based service discovery
+            # Each monitoring domain manages its own target file
+            - job_name: 'file-sd'
+              file_sd_configs:
+                - files:
+                    - '/etc/prometheus/targets/*.yml'
+                  refresh_interval: 30s
 
-            - job_name: 'raspberry-pi'
+            # Website uptime/latency monitoring (requires relabeling)
+            # This stays in main config because relabeling doesn't work with file-sd
+            - job_name: 'blackbox-http'
+              metrics_path: /probe
+              params:
+                module: [http_2xx]
               static_configs:
-                - targets: ['192.168.68.58:9100']
-                  labels:
-                    instance: 'raspberry-pi'
-                    role: 'network-core'
+                - targets:
+                    - https://ashishra0.com
+                    - https://x.com
+                    - https://github.com
+              relabel_configs:
+                - source_labels: [__address__]
+                  target_label: __param_target
+                - source_labels: [__param_target]
+                  target_label: instance
+                - target_label: __address__
+                  replacement: 192.168.68.58:9115
+        mode: "0644"
 
-            - job_name: 'proxmox-host'
-              static_configs:
-                - targets: ['192.168.68.11:9100']
-                  labels:
-                    instance: 'proxmox-host'
-                    role: 'hypervisor'
+    - name: Create core infrastructure targets
+      copy:
+        dest: "{{ monitoring_dir }}/targets/core.yml"
+        content: |
+          # Core infrastructure monitoring (node exporters)
+          # Managed by: monitoring-stack.yaml
+          - targets:
+              - 'localhost:9090'
+            labels:
+              job: 'prometheus'
+              instance: 'prometheus'
 
-            - job_name: 'monitor-lxc'
-              static_configs:
-                - targets: ['192.168.68.20:9100']
-                  labels:
-                    instance: 'monitor-lxc'
-                    role: 'monitoring'
+          - targets:
+              - '192.168.68.58:9100'
+            labels:
+              job: 'raspberry-pi'
+              instance: 'raspberry-pi'
+              role: 'network-core'
+
+          - targets:
+              - '192.168.68.11:9100'
+            labels:
+              job: 'proxmox-host'
+              instance: 'proxmox-host'
+              role: 'hypervisor'
+
+          - targets:
+              - '192.168.68.20:9100'
+            labels:
+              job: 'monitor-lxc'
+              instance: 'monitor-lxc'
+              role: 'monitoring'
         mode: "0644"
 
     - name: Create Docker Compose file
@@ -143,6 +183,7 @@
                 - "9090:9090"
               volumes:
                 - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+                - ./targets:/etc/prometheus/targets:ro
                 - ./prometheus-data:/prometheus
               command:
                 - '--config.file=/etc/prometheus/prometheus.yml'

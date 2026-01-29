@@ -79,74 +79,20 @@
       register: exporter_health
       until: exporter_health.status == 200
 
-    - name: Update Prometheus configuration with tapo metrics
+    - name: Create Prometheus target file for power monitoring
       copy:
-        dest: "{{ monitoring_dir }}/prometheus.yml"
+        dest: "{{ monitoring_dir }}/targets/power.yml"
         content: |
-          global:
-            scrape_interval: 15s
-            evaluation_interval: 15s
-
-          scrape_configs:
-            - job_name: 'prometheus'
-              static_configs:
-                - targets: ['localhost:9090']
-                  labels:
-                    instance: 'prometheus'
-
-            - job_name: 'raspberry-pi'
-              static_configs:
-                - targets: ['192.168.68.58:9100']
-                  labels:
-                    instance: 'raspberry-pi'
-                    role: 'network-core'
-
-            - job_name: 'proxmox-host'
-              static_configs:
-                - targets: ['192.168.68.11:9100']
-                  labels:
-                    instance: 'proxmox-host'
-                    role: 'hypervisor'
-
-            - job_name: 'monitor-lxc'
-              static_configs:
-                - targets: ['192.168.68.20:9100']
-                  labels:
-                    instance: 'monitor-lxc'
-                    role: 'monitoring'
-
-            # Website uptime/latency monitoring
-            - job_name: 'blackbox-http'
-              metrics_path: /probe
-              params:
-                module: [http_2xx]
-              static_configs:
-                - targets:
-                    - https://ashishra0.com
-                    - https://x.com
-                    - https://github.com
-              relabel_configs:
-                - source_labels: [__address__]
-                  target_label: __param_target
-                - source_labels: [__param_target]
-                  target_label: instance
-                - target_label: __address__
-                  replacement: 192.168.68.58:9115
-
-            # Blackbox exporter itself
-            - job_name: 'blackbox-exporter'
-              static_configs:
-                - targets: ['192.168.68.58:9115']
-
-            # Tapo power monitoring
-            - job_name: 'tapo-power'
-              static_configs:
-                - targets: ['192.168.68.20:9200']
-                  labels:
-                    instance: 'homelab-ups'
-                    device: 'tapo-p110'
+          # Power monitoring via Tapo P110 smart plug
+          # Managed by: power-monitoring.yaml
+          - targets:
+              - '192.168.68.20:9200'
+            labels:
+              job: 'tapo-power'
+              instance: 'homelab-ups'
+              device: 'tapo-p110'
         mode: "0644"
-      notify: restart prometheus
+      # No restart needed - Prometheus auto-reloads file changes
 
     - name: Display status
       debug:
@@ -158,10 +104,3 @@
           - ""
           - "Next: Create power consumption dashboard in Grafana"
 
-  handlers:
-    - name: restart prometheus
-      community.docker.docker_compose_v2:
-        project_src: "{{ monitoring_dir }}"
-        services:
-          - prometheus
-        state: restarted
