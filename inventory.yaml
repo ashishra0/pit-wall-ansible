@@ -21,11 +21,6 @@ all:
         monitor:
           ansible_host: 192.168.68.20
           ansible_user: root
-
-    # power_monitor:
-    #   hosts:
-    #     power:
-    #       ansible_host: 192.168.68.12
     #       ansible_user: root
 
     # nas:
