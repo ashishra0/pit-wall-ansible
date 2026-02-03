@@ -32,6 +32,26 @@ ansible-playbook playbooks/power-monitoring.yaml
 - Prometheus: http://prometheus.pit-wall.local:9090
 - Pi-hole: http://pihole.pit-wall.local/admin
 
+## Screenshots
+
+See [docs/screenshots](docs/screenshots) for visual examples of the monitoring setup:
+
+### Grafana Dashboards
+
+**Infrastructure Monitoring Dashboard**
+![Infrastructure Monitoring](docs/screenshots/grafana-infrastructure-dashboard.jpg)
+
+**Pit-wall Dashboards Folder**
+![Dashboards Folder](docs/screenshots/grafana-dashboards-folder.jpg)
+
+**Raspberry Pi Metrics Dashboard**
+![Raspberry Pi Metrics](docs/screenshots/grafana-raspberry-pi-metrics.jpg)
+
+### Prometheus
+
+**Target Health Status**
+![Prometheus Targets](docs/screenshots/prometheus-targets.jpg)
+
 ## Status
 
 - [x] Ansible control plane setup
