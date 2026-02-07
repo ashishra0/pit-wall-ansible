@@ -1,6 +1,6 @@
 ---
 - name: Install node_exporter on infrastructure hosts
-  hosts: proxmox,monitoring
+  hosts: proxmox,monitoring,external
   become: yes
   vars:
     node_exporter_version: "1.7.0"
