@@ -23,6 +23,12 @@ all:
           ansible_user: root
     #       ansible_user: root
 
+    external:
+      hosts:
+        hetzner-vps:
+          ansible_host: 46.225.68.103
+          ansible_user: root
+
     # nas:
     #   hosts:
     #     nas:
