@@ -1,0 +1,153 @@
+---
+# Master playbook to setup Hetzner VPS monitoring via Tailscale
+#
+# Prerequisites:
+# 1. Get Tailscale auth key from: https://login.tailscale.com/admin/settings/keys
+# 2. Export it: export TAILSCALE_AUTH_KEY="tskey-auth-xxxxx"
+# 3. Run this playbook: ansible-playbook playbooks/setup-hetzner-monitoring.yaml
+#
+# This playbook will:
+# - Install Tailscale on monitoring LXC and Hetzner VPS
+# - Install node_exporter on Hetzner VPS
+# - Configure Prometheus to scrape the VPS metrics
+
+- name: Step 1 - Install Tailscale on monitoring hosts
+  import_playbook: tailscale.yaml
+
+- name: Step 2 - Install node_exporter on Hetzner VPS
+  hosts: external
+  become: yes
+  vars:
+    node_exporter_version: "1.7.0"
+    node_exporter_arch: "linux-amd64"
+
+  tasks:
+    - name: Check if node_exporter is installed
+      stat:
+        path: /usr/local/bin/node_exporter
+      register: node_exporter_installed
+
+    - name: Download node_exporter
+      get_url:
+        url: "https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/node_exporter-{{ node_exporter_version }}.{{ node_exporter_arch }}.tar.gz"
+        dest: "/tmp/node_exporter-{{ node_exporter_version }}.{{ node_exporter_arch }}.tar.gz"
+      when: not node_exporter_installed.stat.exists
+
+    - name: Extract node_exporter
+      unarchive:
+        src: "/tmp/node_exporter-{{ node_exporter_version }}.{{ node_exporter_arch }}.tar.gz"
+        dest: /tmp
+        remote_src: yes
+      when: not node_exporter_installed.stat.exists
+
+    - name: Copy node_exporter binary
+      copy:
+        src: "/tmp/node_exporter-{{ node_exporter_version }}.{{ node_exporter_arch }}/node_exporter"
+        dest: /usr/local/bin/node_exporter
+        mode: '0755'
+        remote_src: yes
+      when: not node_exporter_installed.stat.exists
+
+    - name: Create node_exporter user
+      user:
+        name: node_exporter
+        system: yes
+        shell: /bin/false
+        create_home: no
+
+    - name: Create node_exporter systemd service
+      copy:
+        dest: /etc/systemd/system/node_exporter.service
+        content: |
+          [Unit]
+          Description=Node Exporter
+          After=network.target
+
+          [Service]
+          Type=simple
+          User=node_exporter
+          ExecStart=/usr/local/bin/node_exporter
+          Restart=always
+          RestartSec=10
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Enable and start node_exporter
+      systemd:
+        name: node_exporter
+        state: started
+        enabled: yes
+        daemon_reload: yes
+
+    - name: Get Tailscale IP
+      shell: tailscale ip -4
+      register: hetzner_tailscale_ip
+      changed_when: false
+
+    - name: Display node_exporter info
+      debug:
+        msg:
+          - "node_exporter installed on {{ inventory_hostname }}"
+          - "Tailscale IP: {{ hetzner_tailscale_ip.stdout }}"
+          - "Metrics available at: http://{{ hetzner_tailscale_ip.stdout }}:9100/metrics"
+
+- name: Step 3 - Configure Prometheus targets
+  hosts: monitoring
+  become: yes
+  vars:
+    monitoring_dir: /opt/monitoring
+
+  tasks:
+    - name: Get Hetzner Tailscale IP from previous play
+      set_fact:
+        hetzner_ts_ip: "{{ hostvars['hetzner-vps']['hetzner_tailscale_ip']['stdout'] }}"
+
+    - name: Create external infrastructure targets file
+      copy:
+        dest: "{{ monitoring_dir }}/targets/external.yml"
+        content: |
+          # External infrastructure monitoring (via Tailscale)
+          # Managed by: setup-hetzner-monitoring.yaml
+          # Last updated: {{ ansible_date_time.iso8601 }}
+          - targets:
+              - '{{ hetzner_ts_ip }}:9100'
+            labels:
+              job: 'hetzner-vps'
+              instance: 'hetzner-vps'
+              role: 'external-server'
+              environment: 'production'
+        mode: "0644"
+
+    - name: Wait for Prometheus to reload configuration
+      pause:
+        seconds: 35
+        prompt: "Waiting for Prometheus to discover new targets (30s refresh interval)..."
+
+    - name: Verify Prometheus can reach the target
+      uri:
+        url: "http://{{ hetzner_ts_ip }}:9100/metrics"
+        timeout: 5
+      register: metrics_check
+      ignore_errors: yes
+
+    - name: Display setup completion
+      debug:
+        msg:
+          - "==================================================================="
+          - "  Hetzner VPS Monitoring Setup Complete!"
+          - "==================================================================="
+          - ""
+          - "Hetzner VPS Tailscale IP: {{ hetzner_ts_ip }}"
+          - "Metrics endpoint: http://{{ hetzner_ts_ip }}:9100/metrics"
+          - "Metrics reachable: {{ 'YES ✓' if metrics_check.status == 200 else 'NO - Check Tailscale connectivity' }}"
+          - ""
+          - "Next steps:"
+          - "1. Check Prometheus targets: http://prometheus.pit-wall.local:9090/targets"
+          - "2. Look for 'hetzner-vps' target - should be UP"
+          - "3. View metrics in Grafana: http://grafana.pit-wall.local:3000"
+          - ""
+          - "Troubleshooting:"
+          - "- Verify Tailscale: ansible all -m shell -a 'tailscale status'"
+          - "- Test connectivity: ansible monitoring -m shell -a 'curl {{ hetzner_ts_ip }}:9100/metrics'"
+          - "==================================================================="

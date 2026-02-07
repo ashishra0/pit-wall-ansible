@@ -1,0 +1,77 @@
+---
+- name: Install and configure Tailscale
+  hosts: monitoring,external
+  become: yes
+  vars:
+    # You'll need to set this as an environment variable or in vars/tailscale.yml
+    # Get your auth key from: https://login.tailscale.com/admin/settings/keys
+    tailscale_auth_key: "{{ lookup('env', 'TAILSCALE_AUTH_KEY') }}"
+
+  tasks:
+    - name: Fail if Tailscale auth key is not set
+      fail:
+        msg: "Please set TAILSCALE_AUTH_KEY environment variable or create vars/tailscale.yml"
+      when: tailscale_auth_key == ""
+
+    - name: Add Tailscale GPG key
+      shell: |
+        curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/{{ ansible_distribution_release }}.noarmor.gpg | \
+        tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
+      args:
+        creates: /usr/share/keyrings/tailscale-archive-keyring.gpg
+
+    - name: Add Tailscale repository
+      apt_repository:
+        repo: "deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/ubuntu {{ ansible_distribution_release }} main"
+        state: present
+        filename: tailscale
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install Tailscale
+      apt:
+        name: tailscale
+        state: present
+
+    - name: Start and enable Tailscale
+      systemd:
+        name: tailscaled
+        state: started
+        enabled: yes
+
+    - name: Ensure Tailscale daemon is fully started
+      systemd:
+        name: tailscaled
+        state: restarted
+      changed_when: false
+
+    - name: Wait for Tailscale socket to be ready
+      wait_for:
+        path: /var/run/tailscale/tailscaled.sock
+        timeout: 30
+
+    - name: Check if already authenticated to Tailscale
+      command: tailscale status
+      register: tailscale_status
+      changed_when: false
+      failed_when: false
+
+    - name: Authenticate with Tailscale
+      command: "tailscale up --auth-key={{ tailscale_auth_key }} --accept-routes"
+      when: "'Logged out' in tailscale_status.stdout or tailscale_status.rc != 0"
+      register: tailscale_up
+
+    - name: Get Tailscale IP address
+      shell: tailscale ip -4
+      register: tailscale_ip
+      changed_when: false
+
+    - name: Display Tailscale information
+      debug:
+        msg:
+          - "Tailscale installed on {{ inventory_hostname }}"
+          - "Tailscale IP: {{ tailscale_ip.stdout }}"
+          - ""
+          - "Important: Note down this Tailscale IP for Prometheus configuration"

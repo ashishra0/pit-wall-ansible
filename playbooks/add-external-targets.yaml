@@ -1,0 +1,43 @@
+---
+- name: Configure external infrastructure targets in Prometheus
+  hosts: monitoring
+  become: yes
+  vars:
+    monitoring_dir: /opt/monitoring
+    # You'll need to update this with the actual Tailscale IP after running tailscale.yaml
+    # Run: ansible external -m shell -a "tailscale ip -4" to get it
+    hetzner_tailscale_ip: "{{ lookup('env', 'HETZNER_TAILSCALE_IP') | default('PLACEHOLDER_UPDATE_ME', true) }}"
+
+  tasks:
+    - name: Create external infrastructure targets file
+      copy:
+        dest: "{{ monitoring_dir }}/targets/external.yml"
+        content: |
+          # External infrastructure monitoring (via Tailscale)
+          # Managed by: add-external-targets.yaml
+          - targets:
+              - '{{ hetzner_tailscale_ip }}:9100'
+            labels:
+              job: 'hetzner-vps'
+              instance: 'hetzner-vps'
+              role: 'external-server'
+              environment: 'production'
+        mode: "0644"
+
+    - name: Verify Prometheus targets directory
+      file:
+        path: "{{ monitoring_dir }}/targets"
+        state: directory
+        mode: "0755"
+
+    - name: Display next steps
+      debug:
+        msg:
+          - "External targets configuration created!"
+          - ""
+          - "IMPORTANT: Update the Tailscale IP in the target file"
+          - "1. Get Hetzner VPS Tailscale IP: ansible external -m shell -a 'tailscale ip -4'"
+          - "2. Edit {{ monitoring_dir }}/targets/external.yml with the actual IP"
+          - "3. Prometheus will automatically reload within 30 seconds"
+          - ""
+          - "Verify at: http://prometheus.pit-wall.local:9090/targets"
